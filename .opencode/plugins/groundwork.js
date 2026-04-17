@@ -829,7 +829,7 @@ export const GroundworkPlugin = async ({ client, directory }) => {
       }
       try {
         const gitignorePath = path.join(directory, '.gitignore')
-        const OPENCODE_IGNORE = '.opencode/'
+        const OPENCODE_IGNORE = '.opencode/background-tasks/'
         let gitignore = ''
         try { gitignore = await fsPromises.readFile(gitignorePath, 'utf8') } catch {}
         if (!gitignore.includes(OPENCODE_IGNORE)) {
