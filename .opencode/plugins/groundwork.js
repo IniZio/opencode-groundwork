@@ -54,6 +54,18 @@ ${content}
 
 // ─── Background task types and helpers ───────────────────────────────────────
 
+const PERSISTENCE_BASE = path.join(process.env.XDG_DATA_HOME ?? path.join(process.env.HOME ?? '', '.local', 'share'), 'opencode', 'background-tasks')
+
+function hashPath(p) {
+  let hash = 0
+  for (let i = 0; i < p.length; i++) {
+    const char = p.charCodeAt(i)
+    hash = ((hash << 5) - hash) + char
+    hash |= 0
+  }
+  return Math.abs(hash).toString(36)
+}
+
 function formatDuration(start, end) {
   if (!start) return 'N/A'
   const ms = (end ?? new Date()).getTime() - start.getTime()
@@ -111,7 +123,7 @@ async function formatTaskResult(task, client) {
   return header + (content || '(No text output)')
 }
 
-function buildNotificationText({ task, duration, statusText, allComplete, remainingCount, completedTasks }) {
+function buildNotificationText({ task, duration, statusText, allComplete, remainingCount, completedTasks, artifactPath }) {
   const desc = task.description || task.id
   const errorInfo = task.error ? `\n**Error:** ${task.error}` : ''
   if (allComplete) {
@@ -121,13 +133,13 @@ function buildNotificationText({ task, duration, statusText, allComplete, remain
       ? `[ALL BACKGROUND TASKS FINISHED - ${failed.length} FAILED]`
       : '[ALL BACKGROUND TASKS COMPLETE]'
     let body = ''
-    if (succeeded.length) body += `**Completed:**\n${succeeded.map(t => `- \`${t.id}\`: ${t.description}`).join('\n')}\n`
+    if (succeeded.length) body += `**Completed:**\n${succeeded.map(t => `- \`${t.id}\`: ${t.description}${t.artifactPath ? ` → ${t.artifactPath}` : ''}`).join('\n')}\n`
     if (failed.length) body += `\n**Failed:**\n${failed.map(t => `- \`${t.id}\`: ${t.description} [${t.status.toUpperCase()}]${t.error ? ` - ${t.error}` : ''}`).join('\n')}\n`
     if (!body) body = `- \`${task.id}\`: ${desc} [${task.status.toUpperCase()}]${task.error ? ` - ${task.error}` : ''}\n`
-    return `<system-reminder>\n${header}\n\n${body.trim()}\n\nUse \`background_output(task_id="<id>")\` to retrieve each result.${failed.length > 0 ? `\n\n**ACTION REQUIRED:** ${failed.length} task(s) failed.` : ''}\n</system-reminder>`
+    return `<system-reminder>\n${header}\n\n${body.trim()}\n\nUse \`background_output(task_id="<id>")\` to retrieve each result.${artifactPath ? `\nArtifact: ${artifactPath}` : ''}${failed.length > 0 ? `\n\n**ACTION REQUIRED:** ${failed.length} task(s) failed.` : ''}\n</system-reminder>`
   }
   const isFailure = statusText !== 'COMPLETED'
-  return `<system-reminder>\n[BACKGROUND TASK ${statusText}]\n**ID:** \`${task.id}\`\n**Description:** ${desc}\n**Duration:** ${duration}${errorInfo}\n\n**${remainingCount} task${remainingCount === 1 ? '' : 's'} still in progress.** You WILL be notified when ALL complete.\n${isFailure ? '**ACTION REQUIRED:** This task failed. Check the error and decide whether to retry.' : 'Do NOT poll - continue productive work.'}\n\nUse \`background_output(task_id="${task.id}")\` to retrieve this result when ready.\n</system-reminder>`
+  return `<system-reminder>\n[BACKGROUND TASK ${statusText}]\n**ID:** \`${task.id}\`\n**Description:** ${desc}\n**Duration:** ${duration}${errorInfo}${artifactPath ? `\n**Artifact:** ${artifactPath}` : ''}\n\n**${remainingCount} task${remainingCount === 1 ? '' : 's'} still in progress.** You WILL be notified when ALL complete.\n${isFailure ? '**ACTION REQUIRED:** This task failed. Check the error and decide whether to retry.' : 'Do NOT poll - continue productive work.'}\n\nUse \`background_output(task_id="${task.id}")\` to retrieve this result when ready.\n</system-reminder>`
 }
 
 function formatTaskList(tasks, sessionID) {
@@ -234,6 +246,68 @@ USER: $ARGUMENTS
 After generating the handoff message, IMMEDIATELY call handoff_session with your prompt and files:
 \`handoff_session(prompt="...", files=["src/foo.ts", "src/bar.ts", ...])\``
 
+// ─── PersistenceLayer ─────────────────────────────────────────────────────────
+
+class PersistenceLayer {
+  constructor(basePath = PERSISTENCE_BASE) {
+    this.basePath = basePath
+  }
+
+  artifactPath(taskId, parentSessionID, directory) {
+    const projectId = hashPath(directory)
+    return path.join(this.basePath, projectId, parentSessionID, `${taskId}.md`)
+  }
+
+  artifactDir(taskId, parentSessionID, directory) {
+    return path.dirname(this.artifactPath(taskId, parentSessionID, directory))
+  }
+
+  async write(taskId, parentSessionID, directory, content, metadata) {
+    const dir = this.artifactDir(taskId, parentSessionID, directory)
+    await fsPromises.mkdir(dir, { recursive: true })
+    const frontmatter = Object.entries(metadata)
+      .filter(([, v]) => v !== undefined && v !== null)
+      .map(([k, v]) => `${k}: ${v}`)
+      .join('\n')
+    const md = `---\n${frontmatter}\n---\n\n${content}`
+    await fsPromises.writeFile(this.artifactPath(taskId, parentSessionID, directory), md, 'utf8')
+    return this.artifactPath(taskId, parentSessionID, directory)
+  }
+
+  async read(taskId, parentSessionID, directory) {
+    try {
+      return await fsPromises.readFile(this.artifactPath(taskId, parentSessionID, directory), 'utf8')
+    } catch { return null }
+  }
+
+  async remove(taskId, parentSessionID, directory) {
+    try { await fsPromises.unlink(this.artifactPath(taskId, parentSessionID, directory)) } catch {}
+  }
+
+  async listForSession(parentSessionID, directory) {
+    const sessionDir = path.join(this.basePath, hashPath(directory), parentSessionID)
+    try {
+      const entries = await fsPromises.readdir(sessionDir)
+      const results = []
+      for (const entry of entries) {
+        if (!entry.endsWith('.md')) continue
+        const content = await fsPromises.readFile(path.join(sessionDir, entry), 'utf8')
+        const match = content.match(/^---\n([\s\S]*?)\n---\n/)
+        if (!match) continue
+        const meta = {}
+        for (const line of match[1].split('\n')) {
+          const colonIdx = line.indexOf(':')
+          if (colonIdx > 0) meta[line.slice(0, colonIdx).trim()] = line.slice(colonIdx + 1).trim()
+        }
+        results.push({ id: entry.replace('.md', ''), ...meta })
+      }
+      return results
+    } catch { return [] }
+  }
+}
+
+const persistence = new PersistenceLayer()
+
 // ─── ConcurrencyManager ───────────────────────────────────────────────────────
 
 class ConcurrencyManager {
@@ -303,6 +377,8 @@ class BackgroundManager {
   processingKeys = new Set()
   client = null
   directory = ''
+  readTasks = new Set()
+  artifactPaths = new Map()
 
   getTask(id) { return this.tasks.get(id) }
 
@@ -321,6 +397,100 @@ class BackgroundManager {
 
   findBySession(sessionID) {
     return Array.from(this.tasks.values()).find(t => t.sessionID === sessionID)
+  }
+
+  isRead(taskId) { return this.readTasks.has(taskId) }
+
+  markRead(taskId) { this.readTasks.add(taskId) }
+
+  async persistResult(task) {
+    if (!task.sessionID) return
+    try {
+      const result = await formatTaskResult(task, this.client)
+      const duration = formatDuration(task.startedAt ?? new Date(), task.completedAt)
+      const artifactPath = await persistence.write(
+        task.id, task.parentSessionID, this.directory, result,
+        {
+          id: task.id,
+          description: task.description,
+          agent: task.agent,
+          status: task.status,
+          parent_session: task.parentSessionID,
+          session: task.sessionID,
+          started_at: task.startedAt?.toISOString(),
+          completed_at: task.completedAt?.toISOString(),
+          duration,
+          error: task.error || '',
+        }
+      )
+      this.artifactPaths.set(task.id, artifactPath)
+    } catch {}
+  }
+
+  compactionContext(sessionID) {
+    const tasks = this.getAllDescendantTasks(sessionID)
+    const running = tasks.filter(t => t.status === 'running' || t.status === 'pending')
+    const unreadCompleted = tasks.filter(t => {
+      const terminal = t.status === 'completed' || t.status === 'error' || t.status === 'cancelled' || t.status === 'interrupt'
+      return terminal && !this.isRead(t.id)
+    })
+    if (running.length === 0 && unreadCompleted.length === 0) return null
+    let ctx = '<background-task-context>\n'
+    if (running.length > 0) {
+      ctx += '  running:\n'
+      for (const t of running) ctx += `    - id: ${t.id} description: ${t.description} agent: ${t.agent}\n`
+    }
+    if (unreadCompleted.length > 0) {
+      ctx += '  unread-completed:\n'
+      for (const t of unreadCompleted) {
+        const artifact = this.artifactPaths.get(t.id) ?? ''
+        ctx += `    - id: ${t.id} description: ${t.description} artifact: ${artifact}\n`
+      }
+    }
+    ctx += '</background-task-context>'
+    return ctx
+  }
+
+  async recoverState(sessionID) {
+    const diskTasks = await persistence.listForSession(sessionID, this.directory)
+    const recovered = []
+    for (const diskTask of diskTasks) {
+      if (this.tasks.has(diskTask.id)) continue
+      const task = {
+        id: diskTask.id,
+        description: diskTask.description || '(recovered)',
+        agent: diskTask.agent || 'unknown',
+        status: diskTask.status || 'completed',
+        parentSessionID: sessionID,
+        sessionID: diskTask.session || '',
+        completedAt: diskTask.completed_at ? new Date(diskTask.completed_at) : new Date(),
+        startedAt: diskTask.started_at ? new Date(diskTask.started_at) : undefined,
+        error: diskTask.error || '',
+      }
+      this.tasks.set(task.id, task)
+      const artifactPath = persistence.artifactPath(task.id, sessionID, this.directory)
+      this.artifactPaths.set(task.id, artifactPath)
+      recovered.push(task)
+    }
+    return recovered
+  }
+
+  async recoverStateForTask(taskId) {
+    const artifactPath = persistence.artifactPath(taskId, '', this.directory)
+    const dir = path.dirname(path.dirname(artifactPath))
+    try {
+      const sessionDirs = await fsPromises.readdir(dir)
+      for (const sessionDir of sessionDirs) {
+        const sessionPath = path.join(dir, sessionDir)
+        try {
+          const files = await fsPromises.readdir(sessionPath)
+          if (files.includes(`${taskId}.md`)) {
+            await this.recoverState(sessionDir)
+            return
+          }
+        } catch {}
+      }
+    } catch {}
   }
 
   async launch(input) {
@@ -422,6 +592,7 @@ class BackgroundManager {
       task.completedAt = new Date()
       if (task.concurrencyKey) { this.concurrencyManager.release(task.concurrencyKey); task.concurrencyKey = undefined }
       try { await this.client.session.abort({ path: { id: sessionID } }) } catch {}
+      await this.persistResult(task)
       this.markForNotification(task)
       void this.notifyParentSession(task)
     })
@@ -504,8 +675,10 @@ class BackgroundManager {
       if (ref && now - ref.getTime() > TASK_TTL_MS) {
         task.status = 'error'; task.error = 'Task timed out'; task.completedAt = new Date()
         if (task.concurrencyKey) { this.concurrencyManager.release(task.concurrencyKey); task.concurrencyKey = undefined }
-        this.markForNotification(task)
-        void this.notifyParentSession(task)
+        void this.persistResult(task).then(() => {
+          this.markForNotification(task)
+          void this.notifyParentSession(task)
+        })
       }
     }
   }
@@ -514,6 +687,7 @@ class BackgroundManager {
     if (task.status !== 'running') return
     task.status = 'completed'; task.completedAt = new Date()
     if (task.concurrencyKey) { this.concurrencyManager.release(task.concurrencyKey); task.concurrencyKey = undefined }
+    await this.persistResult(task)
     this.markForNotification(task)
     try { await this.client.session.abort({ path: { id: task.sessionID } }) } catch {}
     await this.notifyParentSession(task)
@@ -541,8 +715,10 @@ class BackgroundManager {
       task.error = typeof props?.error?.message === 'string' ? props.error.message : 'Session error'
       task.completedAt = new Date()
       if (task.concurrencyKey) { this.concurrencyManager.release(task.concurrencyKey); task.concurrencyKey = undefined }
-      this.markForNotification(task)
-      void this.notifyParentSession(task)
+      void this.persistResult(task).then(() => {
+        this.markForNotification(task)
+        void this.notifyParentSession(task)
+      })
     }
     if (event.type === 'session.deleted') {
       const id = typeof props?.info?.id === 'string' ? props.info.id : undefined
@@ -585,11 +761,12 @@ class BackgroundManager {
 
   async notifyParentSession(task) {
     const duration = formatDuration(task.startedAt ?? new Date(), task.completedAt)
+    const artifactPath = this.artifactPaths.get(task.id) ?? ''
     if (!this.completedTaskSummaries.has(task.parentSessionID)) {
       this.completedTaskSummaries.set(task.parentSessionID, [])
     }
     this.completedTaskSummaries.get(task.parentSessionID).push({
-      id: task.id, description: task.description, status: task.status, error: task.error,
+      id: task.id, description: task.description, status: task.status, error: task.error, artifactPath,
     })
     const pendingSet = this.pendingByParent.get(task.parentSessionID)
     let remainingCount = 0; let allComplete = false
@@ -603,14 +780,14 @@ class BackgroundManager {
       allComplete = remainingCount === 0
     }
     const completedTasks = allComplete
-      ? (this.completedTaskSummaries.get(task.parentSessionID) ?? [{ id: task.id, description: task.description, status: task.status, error: task.error }])
+      ? (this.completedTaskSummaries.get(task.parentSessionID) ?? [{ id: task.id, description: task.description, status: task.status, error: task.error, artifactPath }])
       : []
     if (allComplete) this.completedTaskSummaries.delete(task.parentSessionID)
     const statusText = task.status === 'completed' ? 'COMPLETED'
       : task.status === 'interrupt' ? 'INTERRUPTED'
       : task.status === 'error' ? 'ERROR'
       : 'CANCELLED'
-    const notification = buildNotificationText({ task, duration, statusText, allComplete, remainingCount, completedTasks })
+    const notification = buildNotificationText({ task, duration, statusText, allComplete, remainingCount, completedTasks, artifactPath })
     const isTaskFailure = task.status === 'error' || task.status === 'cancelled' || task.status === 'interrupt'
     const shouldReply = allComplete || isTaskFailure
     try {
@@ -697,7 +874,7 @@ export const GroundworkPlugin = async ({ client, directory }) => {
       }),
 
       background_output: tool({
-        description: 'Get output from background task. ONLY call AFTER receiving a <system-reminder> notification. Can also check status of running tasks.',
+        description: 'Get output from background task. ONLY call AFTER receiving a <system-reminder> notification. Can also check status of running tasks. Results are read from persisted artifact first, with fallback to sub-session extraction.',
         args: {
           task_id: z.string().describe('Task ID to get output from'),
           block: z.boolean().optional().describe('Wait for completion (default: false)'),
@@ -705,7 +882,11 @@ export const GroundworkPlugin = async ({ client, directory }) => {
         },
         async execute(args) {
           try {
-            const task = manager.getTask(args.task_id)
+            let task = manager.getTask(args.task_id)
+            if (!task) {
+              await manager.recoverStateForTask(args.task_id)
+              task = manager.getTask(args.task_id)
+            }
             if (!task) return `Task not found: ${args.task_id}`
             const shouldBlock = args.block === true
             const timeoutMs = Math.min(args.timeout ?? 60000, 600000)
@@ -720,7 +901,13 @@ export const GroundworkPlugin = async ({ client, directory }) => {
                 if (current.status !== 'pending' && current.status !== 'running') break
               }
             }
-            if (resolvedTask.status === 'completed') return await formatTaskResult(resolvedTask, client)
+            const terminal = resolvedTask.status === 'completed' || resolvedTask.status === 'error' || resolvedTask.status === 'cancelled' || resolvedTask.status === 'interrupt'
+            if (terminal) {
+              manager.markRead(resolvedTask.id)
+              const persisted = await persistence.read(resolvedTask.id, resolvedTask.parentSessionID, manager.directory)
+              if (persisted) return persisted
+              if (resolvedTask.status === 'completed') return await formatTaskResult(resolvedTask, client)
+            }
             return formatTaskStatus(resolvedTask)
           } catch (error) {
             return `Error getting output: ${error instanceof Error ? error.message : String(error)}`
@@ -735,7 +922,11 @@ export const GroundworkPlugin = async ({ client, directory }) => {
         },
         async execute(args, toolContext) {
           try {
-            const allTasks = manager.getAllDescendantTasks(toolContext.sessionID)
+            let allTasks = manager.getAllDescendantTasks(toolContext.sessionID)
+            if (!allTasks.length) {
+              await manager.recoverState(toolContext.sessionID)
+              allTasks = manager.getAllDescendantTasks(toolContext.sessionID)
+            }
             const tasks = args.include_completed
               ? allTasks
               : allTasks.filter(t => t.status === 'running' || t.status === 'pending')
@@ -854,6 +1045,12 @@ export const GroundworkPlugin = async ({ client, directory }) => {
           parts: fileParts,
         },
       })
+    },
+
+    'experimental.session.compacting': async ({ sessionID }) => {
+      try {
+        return manager.compactionContext(sessionID)
+      } catch { return null }
     },
   }
 }
