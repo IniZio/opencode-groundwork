@@ -90,7 +90,8 @@ All master PRDs must contain these sections (matching `consolidate-docs` expecta
 4. **API / Interface** — external contracts
 5. **Error Handling** — error classification and surfacing
 6. **Known Limitations** — what is NOT covered
-7. **Steer Log** — mutation tracking (see below)
+7. **Task Graph** — implementation tasks with IDs, dependencies, ownership, and file scope for parallel execution
+8. **Steer Log** — mutation tracking (see below)
 
 Child PRDs use their own template (see `nested-prd` skill).
 
@@ -143,3 +144,45 @@ draft → active → archived
 - PRDs are **never** committed to git (core rule from `using-workflow`)
 - PRDs are **never** staged
 - The `docs/prds/` directory should be in `.gitignore`
+
+## Task Graph Format
+
+The Task Graph section defines implementation tasks for parallel execution. Each task has:
+
+```markdown
+### Task List
+
+| ID | Task | Depends On | Owner / Agent | Files Touched | Est. |
+|----|------|-----------|---------------|---------------|------|
+| T1 | <task> | — | <role> | <paths> | <duration> |
+| T2 | <task> | T1 | <role> | <paths> | <duration> |
+```
+
+### Dependency Graph
+
+Rendered as a simple text diagram:
+
+```
+T1 ──▶ T2
+T3 (independent, parallel with T1)
+```
+
+### Parallelization Rules
+
+- **No dependency edges** → tasks can run simultaneously via `background_task`
+- **Disjoint file sets** → safe to parallelize
+- **Overlapping files** → MUST run sequentially
+- **Owner/agent** column indicates which agent type handles the task
+- Never start a task before all its dependencies are complete
+
+### Conflict Avoidance
+
+The `Files Touched` column makes ownership explicit. When two tasks touch the same file, they either:
+1. Must be sequenced (one depends on the other), OR
+2. Must touch non-overlapping regions of the same file (noted explicitly)
+
+### Estimation
+
+- Duration in days (`1d`, `0.5d`, `2d`)
+- Used for scheduling: tasks on the critical path determine total duration
+- Parallel tasks reduce wall-clock time to the longest branch

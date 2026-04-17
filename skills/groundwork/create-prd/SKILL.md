@@ -81,6 +81,34 @@ child_prds: []
 
 <What this feature does NOT do. Constraints, edge cases not covered, deferred work.>
 
+## Task Graph
+
+<Define implementation tasks with IDs, dependencies, and ownership to enable parallel execution and avoid merge conflicts.>
+
+### Task List
+
+| ID | Task | Depends On | Owner / Agent | Files Touched | Est. |
+|----|------|-----------|---------------|---------------|------|
+| T1 | <first task> | — | <agent or role> | <file paths> | <1d> |
+| T2 | <second task> | T1 | <agent or role> | <file paths> | <0.5d> |
+| T3 | <parallel task> | — | <agent or role> | <file paths> | <1d> |
+
+### Dependency Graph
+
+```
+T1 ──▶ T2
+T3 (independent, can run in parallel with T1)
+T2 ──▶ T4 (if applicable)
+```
+
+### Parallelization Rules
+
+- Tasks with **no dependency edges** can run simultaneously via `background_task`
+- Tasks touching **disjoint file sets** can run simultaneously
+- Tasks touching **overlapping files** MUST run sequentially to avoid conflicts
+- The owner/agent column indicates which agent type should handle each task (e.g., `coder`, `advisor`, `explore`)
+- When allocating parallel tasks, respect the dependency graph — never start a task before all its dependencies are complete
+
 ## Steer Log
 
 <Track direction changes discovered during implementation. Each entry preserves the rationale for pivots so consolidate-docs can produce accurate time-neutral output.>

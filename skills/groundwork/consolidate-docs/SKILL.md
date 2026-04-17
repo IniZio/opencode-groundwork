@@ -44,8 +44,9 @@ Rules for this document:
 - No version numbers or dates in body text
 - No references to previous approaches that were abandoned
 - Every statement describes current reality, not intent or history
-- Sections: Overview, Architecture, Data Model, API/Interface, Error Handling, Known Limitations
+- Sections: Overview, Architecture, Data Model, API/Interface, Error Handling, Known Limitations, Task Graph
 - **Do not include a Steer Log section** — steer entries are absorbed into the relevant sections above. The consolidated doc is time-neutral; steer history is preserved only in the archived originals.
+- **Task Graph**: preserve the task list and dependency graph as-is (they describe the implementation plan, which is part of the spec). Update task statuses if tasks were completed or changed.
 - Frontmatter must use `type: consolidated` with `feature_area`, `date`, `sources`, and `status` fields (see `create-prd/reference.md` for schema)
 
 ### Step 4: Archive Originals
