@@ -171,6 +171,8 @@ Risks to watch:
 Effort: Quick | Short | Medium | Large
 ```
 
+**Keep the total response under 500 words.** If the analysis is complex, use the Expanded Tier but stay concise. The executor needs signal, not essays.
+
 ### Expanded Tier (when complexity warrants)
 
 ```
@@ -193,6 +195,8 @@ The advisor MUST anchor claims to specific artifacts:
 ## Implementation Notes
 
 - Invoke `advisor` subagent using `background_task` tool with agent `"advisor"`.
+- **Always inline file contents** in the prompt — the advisor agent may not have file reading tools. Never say "read file X and verify"; instead, include the file contents directly in the prompt.
+- **Keep prompts focused** — provide only the files and context relevant to the decision. Avoid dumping the entire codebase.
 - Track escalation count; avoid uncontrolled loops (max 3 escalations per task before surfacing to user).
 - Fallback only if `advisor` is unavailable: clearly label "simulated advisor checkpoint" and state why.
 

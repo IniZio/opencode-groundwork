@@ -38,7 +38,7 @@ Execute waves in order; within a wave, run tasks in parallel via `background_tas
 
 - **Web:** `playwright_browser_snapshot` + `playwright_browser_take_screenshot` → `before-<description>.png`
 - **macOS native:** XCUITest accessibility snapshot + `screenshot()` → `before-<description>.png`
-- **Non-UI:** Run existing integration/e2e tests to capture baseline behavior. Note what passes/fails.
+- **Non-UI:** Construct/reuse integration/e2e tests to capture baseline behavior. Note what passes/fails.
 
 ### 2. Implement
 
