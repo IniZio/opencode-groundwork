@@ -193,9 +193,9 @@ The advisor MUST anchor claims to specific artifacts:
 ## Implementation Notes
 
 - Invoke `advisor` subagent using `background_task` tool with agent `"advisor"`.
-- **The advisor can read files directly** — it has read-only tools (`read`, `grep`, `glob`). Tell it which files to inspect rather than inlining contents.
+- **Include relevant file contents in the prompt.** The advisor agent may not have tool access in background_task context — always inline or summarize the files being reviewed rather than asking it to read them.
 - **Output is persisted automatically** — `background_output` reads from the persisted artifact at `.opencode/background-tasks/`. No special file protocol needed.
-- **Keep prompts focused** — point the advisor to specific files rather than dumping entire codebases.
+- **Keep prompts focused** — include only the files and context relevant to the decision.
 - Track escalation count; avoid uncontrolled loops (max 3 escalations per task before surfacing to user).
 - Fallback only if `advisor` is unavailable: clearly label "simulated advisor checkpoint" and state why.
 
