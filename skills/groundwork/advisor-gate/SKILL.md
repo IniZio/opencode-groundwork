@@ -171,8 +171,6 @@ Risks to watch:
 Effort: Quick | Short | Medium | Large
 ```
 
-**Keep the total response under 500 words.** If the analysis is complex, use the Expanded Tier but stay concise. The executor needs signal, not essays.
-
 ### Expanded Tier (when complexity warrants)
 
 ```
@@ -195,10 +193,12 @@ The advisor MUST anchor claims to specific artifacts:
 ## Implementation Notes
 
 - Invoke `advisor` subagent using `background_task` tool with agent `"advisor"`.
-- **Always inline file contents** in the prompt — the advisor agent may not have file reading tools. Never say "read file X and verify"; instead, include the file contents directly in the prompt.
-- **Keep prompts focused** — provide only the files and context relevant to the decision. Avoid dumping the entire codebase.
+- **File-based communication** — always include an output file path in the prompt (e.g. `.opencode/advisor-response-<task-id>.md`). The advisor writes its full response to this file. After the background task completes, read the file instead of relying on `background_output` (which may truncate long responses).
+- **The advisor can read files directly** — it has read-only tools (`read`, `grep`, `glob`). Do not inline file contents; instead, tell it which files to inspect.
+- **Keep prompts focused** — provide only the context relevant to the decision. Point the advisor to specific files rather than dumping contents.
 - Track escalation count; avoid uncontrolled loops (max 3 escalations per task before surfacing to user).
 - Fallback only if `advisor` is unavailable: clearly label "simulated advisor checkpoint" and state why.
+- Clean up response files after reading them.
 
 ## Additional Resources
 
