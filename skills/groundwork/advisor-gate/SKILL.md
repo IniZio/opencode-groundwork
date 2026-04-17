@@ -192,12 +192,12 @@ The advisor MUST anchor claims to specific artifacts:
 
 ## Implementation Notes
 
-- Invoke `advisor` subagent using `background_task` tool with agent `"advisor"`.
-- **Include relevant file contents in the prompt.** The advisor agent may not have tool access in background_task context — always inline or summarize the files being reviewed rather than asking it to read them.
-- **Output is persisted automatically** — `background_output` reads from the persisted artifact at `.opencode/background-tasks/`. No special file protocol needed.
-- **Keep prompts focused** — include only the files and context relevant to the decision.
+- Invoke the advisor using `background_task` with **`agent: "general"`** — not `"advisor"`. The opencode platform restricts the `advisor` agent type from using any tools in subagent contexts. The `general` agent has full read access.
+- **Include the advisor role in the prompt** — prefix the prompt with: "You are a strategic technical advisor. Provide guidance-only: decisions, trade-offs, safety, and next-step clarity. Do not implement code."
+- **The general agent can read files directly** — point it to files to inspect rather than inlining contents.
+- **Output is persisted automatically** — `background_output` reads from the persisted artifact at `.opencode/background-tasks/`.
 - Track escalation count; avoid uncontrolled loops (max 3 escalations per task before surfacing to user).
-- Fallback only if `advisor` is unavailable: clearly label "simulated advisor checkpoint" and state why.
+- Fallback only if `general` is unavailable: clearly label "simulated advisor checkpoint" and state why.
 
 ## Additional Resources
 
