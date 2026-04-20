@@ -84,19 +84,16 @@ function extractMessages(result) {
 }
 
 function formatTaskStatus(task) {
-  const durationLabel = task.status === 'pending' ? 'Queued for' : 'Duration'
   const duration = task.status === 'pending'
     ? formatDuration(task.queuedAt, undefined)
     : formatDuration(task.startedAt, task.completedAt)
-  const promptPreview = truncateText(task.prompt, 500)
-  const progressSection = task.progress?.lastTool ? `\n| Last tool | ${task.progress.lastTool} |` : ''
-  let statusNote = ''
-  if (task.completing) statusNote = '\n\n> **Completing**: Task is finishing up. Wait a moment then call background_output again.'
-  else if (task.status === 'pending') statusNote = '\n\n> **Queued**: Waiting for a concurrency slot.'
-  else if (task.status === 'running') statusNote = '\n\n> **Note**: System will notify you on completion. No need to poll.'
-  else if (task.status === 'error') statusNote = '\n\n> **Failed**: Check the error field.'
-  else if (task.status === 'interrupt') statusNote = '\n\n> **Interrupted**: Prompt error. Session may have partial results.'
-  return `# Task Status\n\n| Field | Value |\n|-------|-------|\n| Task ID | \`${task.id}\` |\n| Description | ${task.description} |\n| Agent | ${task.agent} |\n| Status | **${task.status}** |\n| ${durationLabel} | ${duration} |\n| Session ID | \`${task.sessionID ?? 'N/A'}\` |${progressSection}\n${statusNote}\n## Original Prompt\n\n\`\`\`\n${promptPreview}\n\`\`\``
+  const statusNote = task.completing ? 'completing...'
+    : task.status === 'pending' ? 'queued'
+    : task.status === 'running' ? 'running'
+    : task.status === 'error' ? 'failed'
+    : task.status === 'interrupt' ? 'interrupted'
+    : task.status
+  return `Task ${task.id}: ${task.description} [${task.agent}] — ${statusNote} (${duration})`
 }
 
 async function formatTaskResult(task, client) {
@@ -156,42 +153,26 @@ async function formatTaskResult(task, client) {
 
 function buildNotificationText({ task, duration, statusText, allComplete, remainingCount, completedTasks, artifactPath }) {
   const desc = task.description || task.id
-  const errorInfo = task.error ? `\n**Error:** ${task.error}` : ''
   if (allComplete) {
     const succeeded = completedTasks.filter(t => t.status === 'completed')
     const failed = completedTasks.filter(t => t.status !== 'completed')
-    const header = failed.length > 0
-      ? `[ALL BACKGROUND TASKS FINISHED - ${failed.length} FAILED]`
-      : '[ALL BACKGROUND TASKS COMPLETE]'
-    let body = ''
-    if (succeeded.length) body += `**Completed:**\n${succeeded.map(t => `- \`${t.id}\`: ${t.description}${t.artifactPath ? ` → ${t.artifactPath}` : ''}`).join('\n')}\n`
-    if (failed.length) body += `\n**Failed:**\n${failed.map(t => `- \`${t.id}\`: ${t.description} [${t.status.toUpperCase()}]${t.error ? ` - ${t.error}` : ''}`).join('\n')}\n`
-    if (!body) body = `- \`${task.id}\`: ${desc} [${task.status.toUpperCase()}]${task.error ? ` - ${task.error}` : ''}\n`
-    return `<system-reminder>\n${header}\n\n${body.trim()}\n\nUse \`background_output(task_id="<id>")\` to retrieve each result.${artifactPath ? `\nArtifact: ${artifactPath}` : ''}${failed.length > 0 ? `\n\n**ACTION REQUIRED:** ${failed.length} task(s) failed.` : ''}\n</system-reminder>`
+    let lines = []
+    if (succeeded.length) lines.push(...succeeded.map(t => `✓ ${t.id}: ${t.description}`))
+    if (failed.length) lines.push(...failed.map(t => `✗ ${t.id}: ${t.description} [${t.status}]`))
+    if (!lines.length) lines.push(`${task.id}: ${desc} [${task.status}]`)
+    return `<system-reminder>\n[ALL DONE]\n${lines.join('\n')}${artifactPath ? `\nArtifact: ${artifactPath}` : ''}\n</system-reminder>`
   }
-  const isFailure = statusText !== 'COMPLETED'
-  return `<system-reminder>\n[BACKGROUND TASK ${statusText}]\n**ID:** \`${task.id}\`\n**Description:** ${desc}\n**Duration:** ${duration}${errorInfo}${artifactPath ? `\n**Artifact:** ${artifactPath}` : ''}\n\n**${remainingCount} task${remainingCount === 1 ? '' : 's'} still in progress.** You WILL be notified when ALL complete.\n${isFailure ? '**ACTION REQUIRED:** This task failed. Check the error and decide whether to retry.' : 'Do NOT poll - continue productive work.'}\n\nUse \`background_output(task_id="${task.id}")\` to retrieve this result when ready.\n</system-reminder>`
+  return `<system-reminder>\n[${statusText}] ${task.id}: ${desc} (${duration})${task.error ? ` — ${task.error}` : ''}${remainingCount > 0 ? ` — ${remainingCount} remaining` : ''}\n</system-reminder>`
 }
 
 function formatTaskList(tasks, sessionID) {
-  if (!tasks.length) {
-    return `# Background Tasks\n\nNo background tasks found for session \`${sessionID}\`.`
-  }
-  const rows = tasks.map(t => {
-    const status = t.status === 'running' ? '🏃 running'
-      : t.status === 'pending' ? '⏳ pending'
-      : t.status === 'completed' ? '✅ completed'
-      : t.status === 'error' ? '❌ error'
-      : t.status === 'cancelled' ? '🚫 cancelled'
-      : t.status === 'interrupt' ? '⚡ interrupt'
-      : t.status
-    const duration = t.status === 'pending'
-      ? formatDuration(t.queuedAt, undefined)
-      : formatDuration(t.startedAt, t.completedAt)
-    const tools = t.progress?.toolCalls ? ` (${t.progress.toolCalls} tools)` : ''
-    return `| \`${t.id}\` | ${t.description} | ${t.agent} | ${status}${tools} | ${duration} |`
+  if (!tasks.length) return `No background tasks for ${sessionID}.`
+  const lines = tasks.map(t => {
+    const status = t.status === 'running' ? 'run' : t.status === 'pending' ? 'q' : t.status === 'completed' ? 'done' : t.status === 'error' ? 'err' : t.status === 'cancelled' ? 'x' : t.status === 'interrupt' ? '!' : t.status
+    const duration = t.status === 'pending' ? formatDuration(t.queuedAt) : formatDuration(t.startedAt, t.completedAt)
+    return `${t.id}: ${t.description} [${t.agent}] ${status} (${duration})`
   })
-  return `# Background Tasks (${tasks.length})\n\n| ID | Description | Agent | Status | Duration |\n|---|---|---|---|---|\n${rows.join('\n')}\n\nUse \`background_output(task_id="<id>")\` to retrieve completed results.`
+  return `Background tasks (${tasks.length}):\n${lines.join('\n')}`
 }
 
 // ─── Handoff helpers ──────────────────────────────────────────────────────────
@@ -906,11 +887,11 @@ export const GroundworkPlugin = async ({ client, directory }) => {
 
     tool: {
       background_task: tool({
-        description: 'Run agent task in background. Returns task_id immediately; notifies on completion. Use `background_output` to get results. Prompts MUST be in English.',
+        description: 'Launch background task. Returns task_id. Use background_output after notification.',
         args: {
-          description: z.string().describe('Short task description (3-5 words, shown in status)'),
-          prompt: z.string().describe('Full detailed prompt for the background agent. Must be self-contained with all context needed.'),
-          agent: z.string().describe('Agent type to use (e.g. "general", "explore", "coder")'),
+          description: z.string().describe('Short description (3-5 words)'),
+          prompt: z.string().describe('Self-contained prompt with all context'),
+          agent: z.string().describe('Agent type (general, explore, coder)'),
         },
         async execute(args, toolContext) {
           if (!args.agent?.trim()) return '[ERROR] Agent parameter is required.'
@@ -935,7 +916,7 @@ export const GroundworkPlugin = async ({ client, directory }) => {
       }),
 
       background_output: tool({
-        description: 'Get output from background task. ONLY call AFTER receiving a <system-reminder> notification. Can also check status of running tasks. Results are read from persisted artifact first, with fallback to sub-session extraction.',
+        description: 'Get background task output. Call after notification.',
         args: {
           task_id: z.string().describe('Task ID to get output from'),
           block: z.boolean().optional().describe('Wait for completion (default: false)'),
@@ -978,7 +959,7 @@ export const GroundworkPlugin = async ({ client, directory }) => {
       }),
 
       background_list: tool({
-        description: 'List all background tasks for the current session. Shows task IDs, descriptions, agents, status, and duration. Like `pty_list` but for background agent tasks.',
+        description: 'List background tasks for this session.',
         args: {
           include_completed: z.boolean().optional().describe('Include completed/failed tasks (default: false, shows only active)'),
         },
@@ -1000,7 +981,7 @@ export const GroundworkPlugin = async ({ client, directory }) => {
       }),
 
       background_cancel: tool({
-        description: 'Cancel running background task(s). Use all=true to cancel ALL tasks for this session.',
+        description: 'Cancel background task(s). Use all=true for all.',
         args: {
           taskId: z.string().optional().describe('Task ID to cancel'),
           all: z.boolean().optional().describe('Cancel all running background tasks'),
