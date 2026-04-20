@@ -91,7 +91,8 @@ function formatTaskStatus(task) {
   const promptPreview = truncateText(task.prompt, 500)
   const progressSection = task.progress?.lastTool ? `\n| Last tool | ${task.progress.lastTool} |` : ''
   let statusNote = ''
-  if (task.status === 'pending') statusNote = '\n\n> **Queued**: Waiting for a concurrency slot.'
+  if (task.completing) statusNote = '\n\n> **Completing**: Task is finishing up. Wait a moment then call background_output again.'
+  else if (task.status === 'pending') statusNote = '\n\n> **Queued**: Waiting for a concurrency slot.'
   else if (task.status === 'running') statusNote = '\n\n> **Note**: System will notify you on completion. No need to poll.'
   else if (task.status === 'error') statusNote = '\n\n> **Failed**: Check the error field.'
   else if (task.status === 'interrupt') statusNote = '\n\n> **Interrupted**: Prompt error. Session may have partial results.'
@@ -716,14 +717,28 @@ class BackgroundManager {
   }
 
   async tryCompleteTask(task, _source) {
-    if (task.status !== 'running') return
-    task.status = 'completed'; task.completedAt = new Date()
-    if (task.concurrencyKey) { this.concurrencyManager.release(task.concurrencyKey); task.concurrencyKey = undefined }
-    await sleep(2000)
-    await this.persistResult(task)
-    this.markForNotification(task)
-    try { await this.client.session.abort({ path: { id: task.sessionID } }) } catch {}
-    await this.notifyParentSession(task)
+    // Atomic guard: prevent concurrent completion attempts from poll + idle + error handlers
+    if (task.status !== 'running' || task.completing) return
+    task.completing = true
+    
+    try {
+      if (task.concurrencyKey) { this.concurrencyManager.release(task.concurrencyKey); task.concurrencyKey = undefined }
+      await sleep(2000)
+      await this.persistResult(task)
+      task.status = 'completed'
+      task.completedAt = new Date()
+      this.markForNotification(task)
+      try { await this.client.session.abort({ path: { id: task.sessionID } }) } catch {}
+      await this.notifyParentSession(task)
+    } catch (err) {
+      task.status = 'error'
+      task.error = err instanceof Error ? err.message : String(err)
+      task.completedAt = new Date()
+      this.markForNotification(task)
+      await this.notifyParentSession(task)
+    } finally {
+      task.completing = false
+    }
   }
 
   handleEvent(event) {
@@ -732,7 +747,7 @@ class BackgroundManager {
       const sessionID = typeof props?.sessionID === 'string' ? props.sessionID : undefined
       if (!sessionID) return
       const task = this.findBySession(sessionID)
-      if (!task || task.status !== 'running') return
+      if (!task || task.status !== 'running' || task.completing) return
       const existingTimer = this.completionTimers.get(task.id)
       if (existingTimer) return
       const timer = setTimeout(() => { this.completionTimers.delete(task.id); void this.tryCompleteTask(task, 'session.idle') }, 5000)
@@ -743,7 +758,7 @@ class BackgroundManager {
       const sessionID = typeof props?.sessionID === 'string' ? props.sessionID : undefined
       if (!sessionID) return
       const task = this.findBySession(sessionID)
-      if (!task || task.status !== 'running') return
+      if (!task || task.status !== 'running' || task.completing) return
       task.status = 'error'
       task.error = typeof props?.error?.message === 'string' ? props.error.message : 'Session error'
       task.completedAt = new Date()
@@ -793,6 +808,9 @@ class BackgroundManager {
   }
 
   async notifyParentSession(task) {
+    // Deduplicate: prevent multiple notifications for the same task
+    if (task.notified) return
+    task.notified = true
     const duration = formatDuration(task.startedAt ?? new Date(), task.completedAt)
     const artifactPath = this.artifactPaths.get(task.id) ?? ''
     if (!this.completedTaskSummaries.has(task.parentSessionID)) {
@@ -934,14 +952,15 @@ export const GroundworkPlugin = async ({ client, directory }) => {
             const shouldBlock = args.block === true
             const timeoutMs = Math.min(args.timeout ?? 60000, 600000)
             let resolvedTask = task
-            if (shouldBlock && (task.status === 'pending' || task.status === 'running')) {
+            const isActive = (t) => t.status === 'pending' || t.status === 'running' || t.completing
+            if (shouldBlock && isActive(task)) {
               const start = Date.now()
               while (Date.now() - start < timeoutMs) {
                 await new Promise(r => setTimeout(r, 1000))
                 const current = manager.getTask(args.task_id)
                 if (!current) return `Task was deleted: ${args.task_id}`
                 resolvedTask = current
-                if (current.status !== 'pending' && current.status !== 'running') break
+                if (!isActive(current)) break
               }
             }
             const terminal = resolvedTask.status === 'completed' || resolvedTask.status === 'error' || resolvedTask.status === 'cancelled' || resolvedTask.status === 'interrupt'
